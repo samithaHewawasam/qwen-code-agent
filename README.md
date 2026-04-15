@@ -45,6 +45,25 @@ While Claude Code uses Anthropic's Claude models with native function calling, t
 
 ## Installation
 
+### Option 1: Install as Global Command (Recommended)
+
+1. Navigate to the project directory:
+   ```bash
+   cd qwen-code-agent
+   ```
+
+2. Install globally in development mode:
+   ```bash
+   pip install -e .
+   ```
+
+3. Now you can use the `qwen` command from anywhere:
+   ```bash
+   qwen
+   ```
+
+### Option 2: Run Directly
+
 1. Navigate to the project directory:
    ```bash
    cd qwen-code-agent
@@ -55,25 +74,30 @@ While Claude Code uses Anthropic's Claude models with native function calling, t
    pip install -r requirements.txt
    ```
 
-3. Configure environment (optional):
+3. Run the script:
    ```bash
-   cp .env.example .env
-   # Edit .env with your settings
-   ```
-
-4. Make the main script executable:
-   ```bash
-   chmod +x main.py
+   python main.py
    ```
 
 ## Usage
 
 ### Interactive Chat Mode
 
-Start an interactive session:
+Simply type `qwen` to start an interactive session:
 
 ```bash
-python main.py chat
+qwen
+```
+
+Or use one of the aliases:
+```bash
+qwen-agent      # Full name
+qa              # Short alias
+```
+
+You can also explicitly start chat mode:
+```bash
+qwen chat
 ```
 
 Example conversation:

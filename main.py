@@ -5,9 +5,11 @@ A Claude Code-like coding assistant powered by qwen2.5-coder:7b
 """
 import os
 import sys
+from typing import Optional, Dict, Any
 import click
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.markdown import Markdown
 from agent import QwenCodeAgent
 from tools import register_tools
 
@@ -17,10 +19,29 @@ console = Console()
 load_dotenv()
 
 
-@click.group()
-def cli():
+def get_config(
+    model: Optional[str] = None,
+    ollama_host: Optional[str] = None,
+    chroma_host: Optional[str] = None,
+    chroma_port: Optional[int] = None
+) -> Dict[str, Any]:
+    """Load configuration from parameters or environment variables"""
+    return {
+        'model': model or os.getenv('OLLAMA_MODEL', 'qwen2.5-coder:7b'),
+        'ollama_host': ollama_host or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'),
+        'chroma_host': chroma_host or os.getenv('CHROMA_HOST', 'localhost'),
+        'chroma_port': chroma_port or int(os.getenv('CHROMA_PORT', '8000')),
+        'collection_name': os.getenv('CHROMA_COLLECTION', 'codebase')
+    }
+
+
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
     """Qwen Code Agent - AI coding assistant powered by qwen2.5-coder:7b"""
-    pass
+    # If no subcommand is provided, start interactive chat
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(chat)
 
 
 @cli.command()
@@ -32,20 +53,16 @@ def chat(model, ollama_host, chroma_host, chroma_port):
     """Start an interactive chat session with the agent"""
 
     # Get configuration from env or parameters
-    model = model or os.getenv('OLLAMA_MODEL', 'qwen2.5-coder:7b')
-    ollama_host = ollama_host or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-    chroma_host = chroma_host or os.getenv('CHROMA_HOST', 'localhost')
-    chroma_port = chroma_port or int(os.getenv('CHROMA_PORT', '8000'))
-    collection_name = os.getenv('CHROMA_COLLECTION', 'codebase')
+    config = get_config(model, ollama_host, chroma_host, chroma_port)
 
     try:
         # Initialize agent
-        console.print(f"[cyan]Initializing agent with model: {model}[/cyan]")
-        agent = QwenCodeAgent(model=model, ollama_host=ollama_host)
+        console.print(f"[cyan]Initializing agent with model: {config['model']}[/cyan]")
+        agent = QwenCodeAgent(model=config['model'], ollama_host=config['ollama_host'])
 
         # Register tools
         console.print("[cyan]Registering tools...[/cyan]")
-        register_tools(agent, chroma_host, chroma_port, collection_name)
+        register_tools(agent, config['chroma_host'], config['chroma_port'], config['collection_name'])
 
         # Start chat
         agent.chat()
@@ -65,23 +82,68 @@ def chat(model, ollama_host, chroma_host, chroma_port):
 def run(prompt, model, ollama_host):
     """Run a single prompt and exit"""
 
-    model = model or os.getenv('OLLAMA_MODEL', 'qwen2.5-coder:7b')
-    ollama_host = ollama_host or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-    chroma_host = os.getenv('CHROMA_HOST', 'localhost')
-    chroma_port = int(os.getenv('CHROMA_PORT', '8000'))
-    collection_name = os.getenv('CHROMA_COLLECTION', 'codebase')
+    config = get_config(model, ollama_host)
 
     try:
         # Initialize agent
-        agent = QwenCodeAgent(model=model, ollama_host=ollama_host)
-        register_tools(agent, chroma_host, chroma_port, collection_name)
+        agent = QwenCodeAgent(model=config['model'], ollama_host=config['ollama_host'])
+        register_tools(agent, config['chroma_host'], config['chroma_port'], config['collection_name'])
 
         # Run single turn
         response = agent.run_turn(prompt)
 
         # Print response
-        from rich.markdown import Markdown
         console.print(Markdown(response))
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Goodbye![/yellow]")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+        sys.exit(1)
+
+
+@cli.command()
+@click.option('--force', is_flag=True, help='Force re-indexing even if already indexed')
+def index(force):
+    """Index the current directory for code search"""
+    config = get_config()
+
+    try:
+        import chromadb
+        from indexer import CodeIndexer
+
+        # Connect to ChromaDB
+        console.print("[cyan]Connecting to ChromaDB...[/cyan]")
+        client = chromadb.HttpClient(
+            host=config['chroma_host'],
+            port=config['chroma_port']
+        )
+
+        collection = client.get_or_create_collection(name=config['collection_name'])
+
+        # Check if already indexed
+        if not force:
+            count = collection.count()
+            if count > 0:
+                console.print(f"[yellow]Codebase already indexed ({count} chunks)[/yellow]")
+                console.print("[yellow]Use --force to re-index[/yellow]")
+                return
+
+        # Clear collection if force
+        if force:
+            console.print("[yellow]Clearing existing index...[/yellow]")
+            client.delete_collection(name=config['collection_name'])
+            collection = client.get_or_create_collection(name=config['collection_name'])
+
+        # Index directory
+        indexer = CodeIndexer(client, collection)
+        result = indexer.index_directory(".")
+
+        if result:
+            console.print("\n[green]Indexing complete![/green]")
+        else:
+            console.print("\n[yellow]No files were indexed[/yellow]")
 
     except Exception as e:
         console.print(f"[red]Error: {str(e)}[/red]")

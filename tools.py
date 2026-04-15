@@ -283,7 +283,7 @@ class RAGTools:
 
 
 def register_tools(agent, chroma_host: str = "localhost", chroma_port: int = 8000,
-                   collection_name: str = "codebase"):
+                   collection_name: str = "codebase", auto_index: bool = True):
     """Register all tools with the agent"""
 
     # File tools
@@ -303,5 +303,10 @@ def register_tools(agent, chroma_host: str = "localhost", chroma_port: int = 800
     if rag_tools.initialize():
         agent.add_tool("rag_query", rag_tools.rag_query)
         console.print("[green]RAG tools initialized successfully[/green]")
+
+        # Auto-index current directory if enabled
+        if auto_index:
+            from indexer import auto_index_current_directory
+            auto_index_current_directory(rag_tools.client, rag_tools.collection)
     else:
         console.print("[yellow]RAG tools not available[/yellow]")

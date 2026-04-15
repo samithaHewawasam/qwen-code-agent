@@ -9,6 +9,9 @@ import ollama
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.live import Live
+from rich.status import Status
 
 console = Console()
 
@@ -133,7 +136,7 @@ When you want to respond to the user without using a tool, just write normally. 
         except Exception as e:
             return f"Error executing {tool_call.tool_name}: {str(e)}"
 
-    def generate_response(self, user_message: str) -> str:
+    def generate_response(self, user_message: str, show_progress: bool = True, stream: bool = True) -> str:
         """Generate a response from the model"""
         # Add user message to history
         self.conversation_history.append(Message(role="user", content=user_message))
@@ -145,46 +148,93 @@ When you want to respond to the user without using a tool, just write normally. 
             for msg in self.conversation_history
         ])
 
-        # Call Ollama
-        response = ollama.chat(
-            model=self.model,
-            messages=messages
-        )
+        assistant_response = ""
 
-        assistant_response = response['message']['content']
+        if stream:
+            # Stream response with live updates
+            if show_progress:
+                console.print("[dim]Assistant is typing...[/dim]")
+
+            stream_response = ollama.chat(
+                model=self.model,
+                messages=messages,
+                stream=True
+            )
+
+            for chunk in stream_response:
+                if 'message' in chunk and 'content' in chunk['message']:
+                    chunk_text = chunk['message']['content']
+                    assistant_response += chunk_text
+                    if show_progress:
+                        console.print(chunk_text, end="", markup=False)
+
+            if show_progress:
+                console.print()  # New line after streaming
+        else:
+            # Non-streaming mode with progress indicator
+            if show_progress:
+                with console.status("[cyan]Thinking...", spinner="dots") as status:
+                    response = ollama.chat(
+                        model=self.model,
+                        messages=messages
+                    )
+            else:
+                response = ollama.chat(
+                    model=self.model,
+                    messages=messages
+                )
+
+            assistant_response = response['message']['content']
 
         # Add to history
         self.conversation_history.append(Message(role="assistant", content=assistant_response))
 
         return assistant_response
 
-    def run_turn(self, user_message: str) -> str:
+    def run_turn(self, user_message: str, stream: bool = True) -> str:
         """Run a single conversation turn, handling tool calls"""
-        response = self.generate_response(user_message)
+        console.print(f"\n[bold green]Assistant:[/bold green]")
+        response = self.generate_response(user_message, stream=stream)
 
         # Check for tool calls
         tool_calls = self.parse_tool_calls(response)
 
         if not tool_calls:
-            # No tool calls, return response as-is
+            # No tool calls, display response if not already streamed
+            if not stream:
+                console.print(Markdown(response))
             return response
+
+        # Remove tool call XML from displayed text
+        clean_response = re.sub(r'<tool_call>.*?</tool_call>', '', response, flags=re.DOTALL).strip()
+        if clean_response and not stream:
+            console.print(Markdown(clean_response))
 
         # Execute tool calls and collect results
         tool_results = []
-        for tool_call in tool_calls:
-            console.print(f"\n[cyan]Executing: {tool_call.tool_name}[/cyan]")
-            console.print(f"[dim]Parameters: {json.dumps(tool_call.parameters, indent=2)}[/dim]")
+        for i, tool_call in enumerate(tool_calls, 1):
+            console.print(f"\n[cyan]→ Executing tool {i}/{len(tool_calls)}: {tool_call.tool_name}[/cyan]")
+            console.print(f"[dim]  Parameters: {json.dumps(tool_call.parameters, indent=2)}[/dim]")
 
-            result = self.execute_tool(tool_call)
+            with console.status(f"[cyan]Running {tool_call.tool_name}...", spinner="dots"):
+                result = self.execute_tool(tool_call)
+
             tool_results.append(f"Tool: {tool_call.tool_name}\nResult:\n{result}")
 
-            console.print(Panel(result[:500] + ("..." if len(result) > 500 else ""),
-                              title=f"Tool Result: {tool_call.tool_name}",
-                              border_style="green"))
+            # Show result preview
+            preview = result[:300] + ("..." if len(result) > 300 else "")
+            console.print(Panel(preview,
+                              title=f"✓ {tool_call.tool_name}",
+                              border_style="green",
+                              padding=(0, 1)))
 
         # Send tool results back to model for analysis
+        console.print(f"\n[bold green]Assistant:[/bold green]")
         tool_results_message = "\n\n".join(tool_results)
-        follow_up = self.generate_response(f"<tool_results>\n{tool_results_message}\n</tool_results>")
+        follow_up = self.generate_response(f"<tool_results>\n{tool_results_message}\n</tool_results>", stream=stream)
+
+        if not stream:
+            console.print(Markdown(follow_up))
 
         return follow_up
 
@@ -193,7 +243,7 @@ When you want to respond to the user without using a tool, just write normally. 
         console.print(Panel.fit(
             "[bold green]Qwen Code Agent[/bold green]\n"
             "Powered by qwen2.5-coder:7b\n\n"
-            "Type 'exit' or 'quit' to end the session",
+            "Type 'exit', 'quit', or press Ctrl+C to end the session",
             border_style="blue"
         ))
 
@@ -203,21 +253,17 @@ When you want to respond to the user without using a tool, just write normally. 
                 user_input = console.input("\n[bold blue]You:[/bold blue] ")
 
                 if user_input.lower() in ['exit', 'quit', 'q']:
-                    console.print("[yellow]Goodbye![/yellow]")
+                    console.print("\n[yellow]Goodbye![/yellow]")
                     break
 
                 if not user_input.strip():
                     continue
 
-                # Generate and display response
-                response = self.run_turn(user_input)
-
-                # Display the response
-                console.print(f"\n[bold green]Assistant:[/bold green]")
-                console.print(Markdown(response))
+                # Generate and display response (run_turn handles display)
+                self.run_turn(user_input, stream=True)
 
             except KeyboardInterrupt:
-                console.print("\n[yellow]Interrupted. Type 'exit' to quit.[/yellow]")
-                continue
+                console.print("\n\n[yellow]Goodbye![/yellow]")
+                break
             except Exception as e:
                 console.print(f"\n[red]Error: {str(e)}[/red]")
